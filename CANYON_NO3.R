@@ -1,0 +1,101 @@
+CANYON_NO3 <- function(date,lat,lon,pres,temp,psal,doxy){
+  # function out=CANYON_NO3(gtime,lat,lon,pres,temp,psal,doxy)
+  # 
+  # Multi-layer perceptron to predict nitrate concentration / umol kg-1 
+  #
+  # Neural network training by Raphaëlle Sauzède, LOV; 
+  # as R function by Henry Bittig, LOV
+  #
+  #
+  # input:
+  # gtime - date (UTC) as string ("yyyy-mm-dd HH:MM")
+  # lat   - latitude / °N  [-90 90]
+  # lon   - longitude / °E [-180 180] or [0 360]
+  # pres  - pressure / dbar
+  # temp  - in-situ temperature / °C
+  # psal  - salinity
+  # doxy  - dissolved oxygen / umol kg-1 (!)
+  #
+  # output:
+  # out   - nitrate / umol kg-1
+  #
+  # check value: 18.57849 umol kg-1
+  # for 09-Dec-2014 08:45, 17.6° N, -24.3° E, 180 dbar, 16 °C, 36.1 psu, 104 umol O2 kg-1
+  #
+  # reference:
+  # Sauzède, R., Bittig, H.C., Claustre, H., Pasqueron de Fommervault, O.,
+  # Gattuso, J.-P., Legendre, L., and Johnson, K.S. (2017). 
+  # Estimates of water-column nutrient concentrations and carbonate system
+  # parameters in the global ocean: A novel approach based on neural networks. 
+  # Front. Mar. Sci. 4:128. doi:10.3389/fmars.2017.00128 
+  #
+  # Henry Bittig, LOV
+  # 14.04.2017
+  
+  # No input checks! Assumes informed use, e.g., same dimensions for all
+  # inputs, ...
+  
+  require(fields)
+  
+  basedir <- "../CANYON_Training/" # relative or absolute path to CANYON training files
+  
+  # input preparation
+  #day of the year from the date
+  #date <- as.POSIXct(date,format="%Y-%m-%d")
+  date <- as.POSIXct(date)
+  day <- as.numeric(format(date,"%j"))*360/365 # only full yearday used; entire year (365 d) mapped to 360°
+  #year <- as.numeric(format(date,"%Y"))
+  lon[which(lon>180)]=lon[which(lon>180)]-360
+  # doy sigmoid scaling
+  presgrid <- read.table(paste(basedir,"CY_doy_pres_limit.csv",sep=""))
+  pivot_obj <- list(x=presgrid[,1][-1],y=unlist(presgrid[1,][-1]),z=as.matrix(presgrid[-1,-1]))
+  prespivot <- interp.surface(pivot_obj,matrix(cbind(lon,lat),ncol=2))
+  fsigmoid <- 1/(1+exp((pres-prespivot)/50))
+  # input sequence: independent of year
+  #            lat,      sin(lon),    cos(lon),    sin(day),    cos(day),    temp,   sal,    oxygen, P 
+  data <- cbind(lat/90,sinpi(lon/180),cospi(lon/180),sinpi(day/180)*fsigmoid,cospi(day/180)*fsigmoid,temp,psal,doxy,pres/2e4+1/((1+exp(-pres/300))^3))
+  
+  temporaire <- read.table(paste(basedir,"Fichier_poids_NO3_hidden_ascii20_17.sn",sep=""))
+  poids <- temporaire[,3]
+  rm(temporaire)
+  
+  ne=9 # Number of inputs
+  nc1=20 # Number of neurons of the first hidden layer
+  nc2=17 # Number of neurons of the second hidden layer
+  ns=1  # Number of outputs
+  
+  # WEIGHT AND BIAS PARAMETERS   
+  # weight and bias from the input layer to the first hidden layer w1, b1
+  b1=matrix(poids[1:nc1],nc1,1);    
+  w1=matrix(poids[nc1+nc2+ns+(1:(ne*nc1))],nc1,ne);
+  # weight and bias from the first hidden layer to the second hidden layer
+  b2=matrix(poids[nc1+(1:nc2)],nc2,1);
+  w2=matrix(poids[nc1+nc2+ns+ne*nc1+(1:(nc1*nc2))],nc2,nc1);
+  # weight and bias from the second hidden layer to the output layer w3, b3    
+  b3=matrix(poids[nc1+nc2+(1:ns)],ns,1);
+  w3=matrix(poids[nc1+nc2+ns+ne*nc1+nc1*nc2+(1:(nc2*ns))],ns,nc2);
+  
+  # Mean and standard deviation of the training dataset
+  # These values are used to normalize the inputs parameters
+  Moy <- unlist(read.table(paste(basedir,"moy_NO3.dat",sep="")),use.names = "FALSE")
+  Ecart <- unlist(read.table(paste(basedir,"std_NO3.dat",sep="")),use.names = "FALSE")
+  
+  # NORMALISATION OF THE INPUT PARAMETERS
+  rx <-dim(data)[1]
+  data_N=(2./3)*(data-t(matrix(Moy[1:ne],ne,1) %*% rep(1,rx)))/t(matrix(Ecart[1:ne],ne,1) %*% rep(1,rx));
+  
+  # Two hidden layers
+  a <- 1.715905*tanh((2./3)*(data_N %*% t(w1)+t(b1 %*% t(rep(1,rx)))))  # input layer to first hidden layer
+  b <- 1.715905*tanh((2./3)*(     a %*% t(w2)+t(b2 %*% t(rep(1,rx))))) # first hidden layer to second hidden layer
+  y <-                            b %*% t(w3)+t(b3 %*% rep(1,rx)) # second hidden layer to output layer
+  # Y is the normalised output value of the neural network, 
+  
+  # Denormalisation of the output of the NN for getting the true value 
+  y_rescaled <- 1.5*y*Ecart[ne+1]+Moy[ne+1]
+  
+  #% and put into same shape as the input variables
+  #out=reshape(y_rescaled,size(pres));
+  out <- y_rescaled
+  
+  return(out)
+} # end of function
